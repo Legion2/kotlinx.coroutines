@@ -8,6 +8,7 @@ package kotlinx.coroutines
 import kotlinx.coroutines.CoroutineStart.*
 import kotlinx.coroutines.intrinsics.*
 import kotlin.coroutines.*
+import kotlin.jvm.*
 
 /**
  * Abstract base class for implementation of coroutines in coroutine builders.
@@ -35,7 +36,7 @@ import kotlin.coroutines.*
  */
 @InternalCoroutinesApi
 public abstract class AbstractCoroutine<in T>(
-    parentContext: CoroutineContext,
+    @JvmField internal val parentContext: CoroutineContext,
     initParentJob: Boolean,
     active: Boolean
 ) : JobSupport(active), Job, Continuation<T>, CoroutineScope {
@@ -123,6 +124,6 @@ public abstract class AbstractCoroutine<in T>(
      * * [LAZY] does nothing.
      */
     public fun <R> start(start: CoroutineStart, receiver: R, block: suspend R.() -> T) {
-        start(block, receiver, this)
+        startAbstractCoroutine(start, receiver, this, block)
     }
 }

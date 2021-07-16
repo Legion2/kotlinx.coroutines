@@ -108,10 +108,10 @@ private class LazyDeferredCoroutine<T>(
     parentContext: CoroutineContext,
     block: suspend CoroutineScope.() -> T
 ) : DeferredCoroutine<T>(parentContext, active = false) {
-    private val continuation = block.createCoroutineUnintercepted(this, this)
+    private val saved = saveLazyCoroutine(this, this, block)
 
     override fun onStart() {
-        continuation.startCoroutineCancellable(this)
+        startLazyCoroutine(saved, this, this)
     }
 }
 
@@ -153,7 +153,7 @@ public suspend fun <T> withContext(
         newContext.ensureActive()
         // FAST PATH #1 -- new context is the same as the old one
         if (newContext === oldContext) {
-            val coroutine = ScopeCoroutine(newContext, uCont)
+            val coroutine = ScopeCoroutine(newContext, uCont, true)
             return@sc coroutine.startUndispatchedOrReturn(coroutine, block)
         }
         // FAST PATH #2 -- the new dispatcher is the same as the old one (something else changed)
@@ -167,7 +167,8 @@ public suspend fun <T> withContext(
         }
         // SLOW PATH -- use new dispatcher
         val coroutine = DispatchedCoroutine(newContext, uCont)
-        block.startCoroutineCancellable(coroutine, coroutine)
+        coroutine.start(CoroutineStart.DEFAULT, coroutine, block)
+        //block.startCoroutineCancellable(coroutine, coroutine)
         coroutine.getResult()
     }
 }
@@ -198,10 +199,9 @@ private class LazyStandaloneCoroutine(
     parentContext: CoroutineContext,
     block: suspend CoroutineScope.() -> Unit
 ) : StandaloneCoroutine(parentContext, active = false) {
-    private val continuation = block.createCoroutineUnintercepted(this, this)
-
+    private val saved = saveLazyCoroutine(this, this, block)
     override fun onStart() {
-        continuation.startCoroutineCancellable(this)
+        startLazyCoroutine(saved, this, this)
     }
 }
 
@@ -219,10 +219,14 @@ private const val RESUMED = 2
 internal class DispatchedCoroutine<in T>(
     context: CoroutineContext,
     uCont: Continuation<T>
-) : ScopeCoroutine<T>(context, uCont) {
+) : ScopeCoroutine<T>(context, uCont, true) {
     // this is copy-and-paste of a decision state machine inside AbstractionContinuation
     // todo: we may some-how abstract it via inline class
     private val _decision = atomic(UNDECIDED)
+
+    protected override fun initParentForNativeUndispatchedCoroutine() {
+        // Will be inited by AbstractCoroutine.start
+    }
 
     private fun trySuspend(): Boolean {
         _decision.loop { decision ->
@@ -265,3 +269,51 @@ internal class DispatchedCoroutine<in T>(
         return state as T
     }
 }
+
+internal fun <T, R> startCoroutineImpl(
+    start: CoroutineStart,
+    receiver: R,
+    completion: Continuation<T>,
+    onCancellation: ((cause: Throwable) -> Unit)?,
+    block: suspend R.() -> T
+) = when (start) {
+    CoroutineStart.DEFAULT -> block.startCoroutineCancellable(receiver, completion, onCancellation)
+    CoroutineStart.ATOMIC -> block.startCoroutine(receiver, completion)
+    CoroutineStart.UNDISPATCHED -> block.startCoroutineUndispatched(receiver, completion)
+    CoroutineStart.LAZY -> Unit // will start lazily
+}
+
+// --------------- Kotlin/Native specialization hooks ---------------
+
+internal expect fun <T, R> startCoroutine(
+    start: CoroutineStart,
+    receiver: R,
+    completion: Continuation<T>,
+    onCancellation: ((cause: Throwable) -> Unit)? = null,
+    block: suspend R.() -> T
+)
+
+// initParentJob + startCoroutine
+internal expect fun <T, R> startAbstractCoroutine(
+    start: CoroutineStart,
+    receiver: R,
+    coroutine: AbstractCoroutine<T>,
+    block: suspend R.() -> T
+)
+
+/**
+ * On JVM & JS lazy coroutines are eagerly started (to record creation trace), the started later.
+ * On Native the block is saved so that it can be shared with another worker, the created and started later.
+ */
+internal expect fun <T, R> saveLazyCoroutine(
+    coroutine: AbstractCoroutine<T>,
+    receiver: R,
+    block: suspend R.() -> T
+): Any
+
+// saved == result of saveLazyCoroutine that was stored in LazyXxxCoroutine class
+internal expect fun <T, R> startLazyCoroutine(
+    saved: Any,
+    coroutine: AbstractCoroutine<T>,
+    receiver: R
+)

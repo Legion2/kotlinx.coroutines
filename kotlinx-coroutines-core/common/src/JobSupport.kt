@@ -139,7 +139,7 @@ public open class JobSupport constructor(active: Boolean) : Job, ChildJob, Paren
      * Initializes parent job.
      * It shall be invoked at most once after construction after all other initialization.
      */
-    protected fun initParentJob(parent: Job?) {
+    internal fun initParentJob(parent: Job?) {
         assert { parentHandle == null }
         if (parent == null) {
             parentHandle = NonDisposableHandle

@@ -151,7 +151,7 @@ private fun <U, T: U> setupTimeout(
 private class TimeoutCoroutine<U, in T: U>(
     @JvmField val time: Long,
     uCont: Continuation<U> // unintercepted continuation
-) : ScopeCoroutine<T>(uCont.context, uCont), Runnable {
+) : ScopeCoroutine<T>(uCont.context, uCont, false), Runnable {
     override fun run() {
         cancelCoroutine(TimeoutCancellationException(time, this))
     }

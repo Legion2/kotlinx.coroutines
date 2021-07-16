@@ -7,6 +7,7 @@ package kotlinx.coroutines
 import kotlinx.cinterop.*
 import platform.posix.*
 import kotlin.coroutines.*
+import kotlin.native.concurrent.*
 
 /**
  * Runs new coroutine and **blocks** current thread _interruptibly_ until its completion.
@@ -78,3 +79,91 @@ private class BlockingCoroutine<T>(
         state as T
     }
 }
+
+internal fun runEventLoop(eventLoop: EventLoop?, isCompleted: () -> Boolean) {
+    try {
+        eventLoop?.incrementUseCount()
+        val thread = currentThread()
+        while (!isCompleted()) {
+            val parkNanos = eventLoop?.processNextEvent() ?: Long.MAX_VALUE
+            if (isCompleted()) break
+            thread.parkNanos(parkNanos)
+        }
+    } finally { // paranoia
+        eventLoop?.decrementUseCount()
+    }
+}
+
+// --------------- Kotlin/Native specialization hooks ---------------
+
+// just start
+internal actual fun <T, R> startCoroutine(
+    start: CoroutineStart,
+    receiver: R,
+    completion: Continuation<T>,
+    onCancellation: ((cause: Throwable) -> Unit)?,
+    block: suspend R.() -> T
+) =
+    startCoroutine(start, receiver, completion, onCancellation, block) {}
+
+// initParentJob + startCoroutine
+internal actual fun <T, R> startAbstractCoroutine(
+    start: CoroutineStart,
+    receiver: R,
+    coroutine: AbstractCoroutine<T>,
+
+    block: suspend R.() -> T
+) {
+    // See https://github.com/Kotlin/kotlinx.coroutines/issues/2064
+    // We shall do initParentJob only after freezing the block
+    startCoroutine(start, receiver, coroutine, null, block) {
+        coroutine.initParentJob(coroutine.parentContext[Job])
+    }
+}
+
+private fun <T, R> startCoroutine(
+    start: CoroutineStart,
+    receiver: R,
+    completion: Continuation<T>,
+    onCancellation: ((cause: Throwable) -> Unit)?,
+    block: suspend R.() -> T,
+    initParentJobIfNeeded: () -> Unit
+) {
+    val curThread = currentThread()
+    val newThread = completion.context[ContinuationInterceptor].thread()
+    if (newThread != curThread) {
+        check(start != CoroutineStart.UNDISPATCHED) {
+            "Cannot start an undispatched coroutine in another thread $newThread from current $curThread"
+        }
+        initParentJobIfNeeded() // only initParentJob here if needed
+        if (start != CoroutineStart.LAZY) {
+            newThread.execute {
+                startCoroutineImpl(start, receiver, completion, onCancellation, block)
+            }
+        }
+        return
+    }
+    initParentJobIfNeeded()
+    startCoroutineImpl(start, receiver, completion, onCancellation, block)
+}
+
+private fun ContinuationInterceptor?.thread(): Thread = when (this) {
+    null -> Dispatchers.Default.thread()
+    is ThreadBoundInterceptor -> thread
+    else -> currentThread() // fallback
+}
+
+internal actual fun <T, R> saveLazyCoroutine(
+    coroutine: AbstractCoroutine<T>,
+    receiver: R,
+    block: suspend R.() -> T
+): Any =
+    block
+
+@Suppress("NOTHING_TO_INLINE", "UNCHECKED_CAST") // Save an entry on call stack
+internal actual fun <T, R> startLazyCoroutine(
+    saved: Any,
+    coroutine: AbstractCoroutine<T>,
+    receiver: R
+) =
+    startCoroutine(CoroutineStart.DEFAULT, receiver, coroutine, null, saved as suspend R.() -> T)
