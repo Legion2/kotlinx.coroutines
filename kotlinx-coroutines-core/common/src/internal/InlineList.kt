@@ -7,13 +7,15 @@
 package kotlinx.coroutines.internal
 
 import kotlinx.coroutines.assert
+import kotlin.jvm.*
 
 /*
  * Inline class that represents a mutable list, but does not allocate an underlying storage
  * for zero and one elements.
  * Cannot be parametrized with `List<*>`.
  */
-internal inline class InlineList<E>(private val holder: Any? = null) {
+@JvmInline
+internal value class InlineList<E>(private val holder: Any? = null) {
     public operator fun plus(element: E): InlineList<E>  {
         assert { element !is List<*> } // Lists are prohibited
         return when (holder) {
